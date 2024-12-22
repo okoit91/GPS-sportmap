@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Start/Stop Button -->
+    <FrameLayout
+        android:id="@+id/startStopFrame"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintDimensionRatio="1:1"
+        app:layout_constraintEnd_toStartOf="@id/distanceCovered"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <ImageButton
+            android:id="@+id/startButton"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@null"
+            android:contentDescription="startButton"
+            android:onClick="onClickStartButton"
+            android:scaleType="centerInside"
+            android:visibility="visible"
+            app:srcCompat="@drawable/start" />
+
+        <ImageButton
+            android:id="@+id/stopButton"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@null"
+            android:contentDescription="stopButton"
+            android:onClick="onClickStopButton"
+            android:scaleType="centerInside"
+            android:visibility="gone"
+            app:srcCompat="@drawable/stop" />
+    </FrameLayout>
+
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/guideline"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        app:layout_constraintEnd_toStartOf="@id/guideline"
+        app:layout_constraintGuide_percent="0.3333"
+        app:layout_constraintStart_toEndOf="@+id/distanceCovered" />
+
+    <androidx.constraintlayout.widget.Guideline
+        android:id="@+id/guideline3"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        app:layout_constraintGuide_percent="0.6666" />
+
+    <TextView
+        android:id="@+id/distanceCovered"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="fullDist"
+
+        app:layout_constraintBottom_toTopOf="@id/sessionDuration"
+        app:layout_constraintEnd_toStartOf="@id/guideline"
+
+        app:layout_constraintStart_toEndOf="@id/startStopFrame"
+        app:layout_constraintTop_toTopOf="@id/startStopFrame" />
+
+    <TextView
+        android:id="@+id/sessionDuration"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="sessDur"
+
+        app:layout_constraintBottom_toTopOf="@+id/averageSpeed"
+        app:layout_constraintEnd_toStartOf="@id/guideline"
+        app:layout_constraintHorizontal_bias="0.5"
+        app:layout_constraintStart_toEndOf="@id/startStopFrame"
+        app:layout_constraintTop_toBottomOf="@+id/distanceCovered" />
+
+    <TextView
+        android:id="@+id/averageSpeed"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="avgSpeed"
+        app:layout_constraintBottom_toBottomOf="@id/startStopFrame"
+        app:layout_constraintEnd_toStartOf="@id/guideline"
+        app:layout_constraintStart_toEndOf="@id/startStopFrame"
+        app:layout_constraintTop_toBottomOf="@+id/sessionDuration" />
+
+    <ImageButton
+        android:id="@+id/checkPointButton"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@null"
+        android:contentDescription="checkpointButton"
+        android:onClick="onClickCheckPointButton"
+        android:scaleType="centerInside"
+        android:visibility="visible"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintDimensionRatio="1:1"
+        app:layout_constraintEnd_toStartOf="@id/distanceCpToCurrent"
+        app:layout_constraintStart_toEndOf="@id/guideline"
+        app:layout_constraintTop_toTopOf="parent"
+        app:srcCompat="@drawable/checkpoint" />
+
+    <TextView
+        android:id="@+id/distanceCpToCurrent"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="distCpCurr"
+        app:layout_constraintBottom_toTopOf="@+id/flyCpToCurrent"
+        app:layout_constraintEnd_toStartOf="@id/guideline3"
+        app:layout_constraintHorizontal_bias="0.5"
+        app:layout_constraintStart_toEndOf="@id/checkPointButton"
+        app:layout_constraintTop_toTopOf="@id/checkPointButton" />
+
+    <TextView
+        android:id="@+id/flyCpToCurrent"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="flyCpCurr"
+        app:layout_constraintBottom_toTopOf="@+id/cpAverageSpeed"
+        app:layout_constraintEnd_toStartOf="@id/guideline3"
+        app:layout_constraintStart_toEndOf="@id/checkPointButton"
+        app:layout_constraintTop_toBottomOf="@+id/distanceCpToCurrent" />
+
+    <TextView
+        android:id="@+id/cpAverageSpeed"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="cpAvgSpd"
+        app:layout_constraintBottom_toBottomOf="@id/checkPointButton"
+        app:layout_constraintEnd_toStartOf="@id/guideline3"
+        app:layout_constraintHorizontal_bias="0.5"
+        app:layout_constraintStart_toEndOf="@id/checkPointButton"
+        app:layout_constraintTop_toBottomOf="@+id/flyCpToCurrent" />
+
+    <ImageButton
+        android:id="@+id/wayPointButton"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="@null"
+        android:contentDescription="waypointButton"
+        android:onClick="onClickWayPointButton"
+        android:scaleType="centerInside"
+        android:visibility="visible"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintDimensionRatio="1:1"
+        app:layout_constraintEnd_toStartOf="@id/wpToCurrent"
+        app:layout_constraintStart_toEndOf="@id/guideline3"
+        app:layout_constraintTop_toTopOf="parent"
+        app:srcCompat="@drawable/waypoint" />
+
+    <TextView
+        android:id="@+id/wpToCurrent"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="wpToCurr"
+        app:layout_constraintBottom_toTopOf="@id/flyWpToCurrent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/wayPointButton"
+        app:layout_constraintTop_toTopOf="@id/wayPointButton" />
+
+    <TextView
+        android:id="@+id/flyWpToCurrent"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="FlyWpCurr"
+        app:layout_constraintBottom_toTopOf="@+id/wpAverageSpeed"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/wayPointButton"
+        app:layout_constraintTop_toBottomOf="@+id/wpToCurrent" />
+
+    <TextView
+        android:id="@+id/wpAverageSpeed"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:text="wpAvgSpd"
+        app:layout_constraintBottom_toBottomOf="@id/wayPointButton"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/wayPointButton"
+        app:layout_constraintTop_toBottomOf="@+id/flyWpToCurrent" />
+
+
+</androidx.constraintlayout.widget.ConstraintLayout>

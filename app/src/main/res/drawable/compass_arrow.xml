@@ -1,0 +1,48 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="200dp"
+    android:height="200dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+
+    <!-- North Indicator -->
+    <path
+        android:fillColor="#FF0000"
+        android:pathData="M50,10 L55,25 L50,20 L45,25 Z" />
+
+    <!-- Direction Markers -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1"
+        android:pathData="M50,5 L50,10" /> <!-- North -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1"
+        android:pathData="M95,50 L90,50" /> <!-- East -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1"
+        android:pathData="M50,95 L50,90" /> <!-- South -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="1"
+        android:pathData="M5,50 L10,50" /> <!-- West -->
+
+    <!-- Intermediate Markers -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="0.5"
+        android:pathData="M72.5,27.5 L70,30" /> <!-- NE -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="0.5"
+        android:pathData="M72.5,72.5 L70,70" /> <!-- SE -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="0.5"
+        android:pathData="M27.5,72.5 L30,70" /> <!-- SW -->
+    <path
+        android:strokeColor="#000000"
+        android:strokeWidth="0.5"
+        android:pathData="M27.5,27.5 L30,30" /> <!-- NW -->
+
+</vector>
