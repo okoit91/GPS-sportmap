@@ -16,6 +16,7 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -48,6 +49,12 @@ import com.google.android.gms.maps.model.MarkerOptions
 import com.google.android.gms.maps.model.Polyline
 import com.google.android.gms.maps.model.PolylineOptions
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.snackbar.Snackbar
+import ee.taltech.gps_sportmap.dto.GpsLocationDTO
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, SensorEventListener {
 
@@ -114,6 +121,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
     private val handler = android.os.Handler()
 
+    private var bottomSheetDialog: BottomSheetDialog? = null
 
     private lateinit var averageSpeed: TextView
 
@@ -138,6 +146,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
     private val trackedPoints = mutableListOf<LatLng>()
     private val checkpoints = mutableListOf<LatLng>()
+
+    private val locationBuffer = mutableListOf<GpsLocationDTO>()
+    private val bulkUploadInterval = 10
+    private var lastUploadTime = System.currentTimeMillis()
 
     private val notificationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -236,6 +248,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val sharedPref = getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
+        val isLoggedIn = sharedPref.getBoolean("isLoggedIn", false)
+
+        if (!isLoggedIn) {
+            val intent = Intent(this, LoginActivity::class.java)
+            startActivity(intent)
+            finish()
+            Log.d(TAG, "We did not log in!!")
+            return
+        }
+
+        Log.d(TAG, "We logged in!!")
+
         setContentView(R.layout.activity_main)
 
         compassImageView = findViewById(R.id.compassImageView)
@@ -252,6 +278,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
         if (!checkLocationPermission()) {
             requestLocationPermission()
+            return
         }
 
         dbHelper = DbHelper(this)
@@ -456,7 +483,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     override fun onDestroy() {
         super.onDestroy()
 
-
+        bottomSheetDialog?.dismiss()
+        bottomSheetDialog = null
 
         if (isNotificationReceiverRegistered) {
             LocalBroadcastManager.getInstance(this)
@@ -468,6 +496,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             unregisterReceiver(locationReceiver)
             isLocationReceiverRegistered = false
         }
+
+
     }
 
     private fun checkLocationPermission(): Boolean {
@@ -553,6 +583,28 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     override fun onLocationChanged(location: Location) {
+
+        val gpsLocation = GpsLocationDTO(
+            recordedAt = getCurrentISO8601Timestamp(),
+            latitude = location.latitude,
+            longitude = location.longitude,
+            accuracy = location.accuracy.toDouble(),
+            altitude = location.altitude,
+            verticalAccuracy = location.verticalAccuracyMeters.toDouble(),
+            gpsLocationTypeId = "00000000-0000-0000-0000-000000000001"
+        )
+
+        synchronized(locationBuffer) {
+            locationBuffer.add(gpsLocation)
+        }
+
+        if (locationBuffer.size >= bulkUploadInterval ||
+            System.currentTimeMillis() - lastUploadTime > 60_000) {
+            sendLocationsInBulk()
+            lastUploadTime = System.currentTimeMillis()
+        }
+
+
         val speed = if (previousLocation != null) {
             val distance = previousLocation!!.distanceTo(location)
             val time = (location.time - previousLocation!!.time) / 1_000.0
@@ -631,13 +683,47 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         previousLocation = location
     }
 
+    private fun sendLocationsInBulk() {
+        CoroutineScope(Dispatchers.IO).launch {
+            val sessionId = getCurrentGpsSessionId()
+            val bulkRequestBody: List<GpsLocationDTO>
+
+            synchronized(locationBuffer) {
+                if (locationBuffer.isEmpty()) return@launch
+                bulkRequestBody = locationBuffer.toList()
+                locationBuffer.clear()
+            }
+
+            if (!isInternetAvailable(this@MainActivity)) {
+                Log.w("BulkUpload", "No internet connection. Locations will be kept in the buffer.")
+                synchronized(locationBuffer) {
+                    locationBuffer.addAll(bulkRequestBody) // Re-add locations to buffer
+                }
+                return@launch
+            }
+
+            try {
+                if (sessionId != null) {
+                    WebClient.postLocationsInBulk(context = this@MainActivity, sessionId, bulkRequestBody)
+                }
+                Log.d("BulkUpload", "Uploaded ${bulkRequestBody.size} locations successfully.")
+            } catch (e: Exception) {
+                Log.e("BulkUpload", "Failed to upload locations: ${e.message}")
+                synchronized(locationBuffer) {
+                    locationBuffer.addAll(bulkRequestBody) // Re-add locations to buffer
+                }
+            }
+        }
+    }
+
+
     private fun calculateAverageSpeed(startLocation: Location?, startTime: Long): Double {
         if (startLocation == null || startTime == 0L || regularDistanceFromCP == 0.0) return 0.0
 
         val elapsedTimeMillis = System.currentTimeMillis() - startTime
-        val elapsedMinutes = elapsedTimeMillis / 60000.0 // Convert to minutes
+        val elapsedMinutes = elapsedTimeMillis / 60000.0
 
-        val distanceInKm = regularDistanceFromCP / 1000.0 // Distance in kilometers
+        val distanceInKm = regularDistanceFromCP / 1000.0
 
         return if (distanceInKm > 0) elapsedMinutes / distanceInKm else 0.0
     }
@@ -724,6 +810,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
         map?.let { map ->
             map.uiSettings.isCompassEnabled = false
+            map.isMyLocationEnabled = checkLocationPermission()
         }
 
 
@@ -804,34 +891,76 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     fun onClickStartButton(view: View) {
-        val serviceIntent = Intent(this, LocationForegroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+
+                val sessionId = createAndStartGpsSession()
+
+                val serviceIntent = Intent(this@MainActivity, LocationForegroundService::class.java).apply {
+                    putExtra("GpsSessionId", sessionId)
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    startService(serviceIntent)
+                }
+
+                startLocation = null
+                currentLocation = null
+                previousLocation = null
+                cpStartLocation = null
+
+                trackedPoints.clear()
+                checkpoints.clear()
+
+                isTracking = true
+                startButton.visibility = View.GONE
+                stopButton.visibility = View.VISIBLE
+                startLocationUpdates()
+
+                if (startLocation == null) {
+                    startLocation = currentLocation
+                }
+
+                sessionStartTime = System.currentTimeMillis()
+                handler.post(updateRunnable)
+
+            } catch (e: Exception) {
+                Log.e("GpsSession", "Failed to start session: ${e.message}")
+                Snackbar.make(
+                    findViewById(android.R.id.content),
+                    "Failed to start session: ${e.message}",
+                    Snackbar.LENGTH_LONG
+                ).show()
+            }
         }
-
-        startLocation = null
-        currentLocation = null
-        previousLocation = null
-        cpStartLocation = null
-
-        trackedPoints.clear()
-        checkpoints.clear()
-
-        isTracking = true
-        startButton.visibility = View.GONE
-        stopButton.visibility = View.VISIBLE
-        startLocationUpdates()
-
-        if (startLocation == null) {
-            startLocation = currentLocation
-        }
-
-        sessionStartTime = System.currentTimeMillis()
-        handler.post(updateRunnable)
     }
 
+    private suspend fun createAndStartGpsSession(): String {
+        return withContext(Dispatchers.IO) {
+            val sessionId = WebClient.createGpsSession(
+                context = this@MainActivity,
+                name = "New Session",
+                description = "Starting a new session",
+                gpsSessionTypeId = "00000000-0000-0000-0000-000000000001"
+            )
+
+            // Save the session ID in SharedPreferences
+            val sharedPref = getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
+            with(sharedPref.edit()) {
+                putString("GpsSessionId", sessionId)
+                apply()
+            }
+
+            sessionId
+        }
+    }
+
+    fun getCurrentGpsSessionId(): String? {
+        val sharedPref = getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
+        return sharedPref.getString("GpsSessionId", null)
+    }
 
     fun onClickStopButton(view: View) {
         showConfirmationDialog(
@@ -847,19 +976,66 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
                 startButton.visibility = View.VISIBLE
                 stopLocationUpdates()
 
-                saveTrack()
+                CoroutineScope(Dispatchers.IO).launch {
+                    val sessionId = getCurrentGpsSessionId()
+                    val bulkRequestBody: List<GpsLocationDTO>
 
-                handler.removeCallbacks(updateRunnable)
-                map?.clear()
-                polyLine?.remove()
-                trackedPoints.clear()
-                checkpoints.clear()
+                    synchronized(locationBuffer) {
+                        if (locationBuffer.isEmpty()) {
+                            clearTrackingData()
+                            return@launch
+                        }
+                        bulkRequestBody = locationBuffer.toList()
+                    }
 
-                resetOverallData()
-                resetCPValues()
-                resetWPValues()
+                    try {
+                        if (sessionId != null && isInternetAvailable(this@MainActivity)) {
+                            WebClient.postLocationsInBulk(
+                                context = this@MainActivity,
+                                sessionId = sessionId,
+                                locations = bulkRequestBody
+                            )
+                            Log.d("StopButton", "Remaining locations uploaded successfully.")
+
+                            synchronized(locationBuffer) {
+                                locationBuffer.clear()
+                            }
+                        } else {
+                            Log.e("StopButton", "No internet connection. Buffer not cleared.")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("StopButton", "Failed to upload remaining locations: ${e.message}")
+                    } finally {
+                        withContext(Dispatchers.Main) {
+                            clearTrackingData()
+                        }
+                    }
+                }
             }
         )
+    }
+
+
+    private fun clearTrackingData() {
+        saveTrack()
+        handler.removeCallbacks(updateRunnable)
+        map?.clear()
+        polyLine?.remove()
+        trackedPoints.clear()
+        checkpoints.clear()
+
+        resetOverallData()
+        resetCPValues()
+        resetWPValues()
+        clearGpsSessionId()
+    }
+
+    fun clearGpsSessionId() {
+        val sharedPref = getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
+        with(sharedPref.edit()) {
+            remove("GpsSessionId")
+            apply()
+        }
     }
 
     fun saveTrack() {
@@ -925,7 +1101,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
                 val incrementalDistance = previousLocation!!.distanceTo(location)
                 regularDistanceFromWP += incrementalDistance
             }
-            // Update the TextView
             wpToCurrent.text = String.format("%.0f m", regularDistanceFromWP)
         } else {
             wpToCurrent.text = "N/A"
@@ -1003,6 +1178,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             flyWpToCurrent.text = "N/A"
             wpAverageSpeed.text = "N/A"
 
+            val waypointLocation = GpsLocationDTO(
+                recordedAt = getCurrentISO8601Timestamp(),
+                latitude = currentLocation!!.latitude,
+                longitude = currentLocation!!.longitude,
+                accuracy = currentLocation!!.accuracy.toDouble(),
+                altitude = currentLocation!!.altitude,
+                verticalAccuracy = currentLocation!!.verticalAccuracyMeters.toDouble(),
+                gpsLocationTypeId = "00000000-0000-0000-0000-000000000002"
+            )
+
+            synchronized(locationBuffer) {
+                locationBuffer.add(waypointLocation)
+            }
+
             Log.d(TAG, "Waypoint saved at: ${wpStartLocation?.latitude}," +
                     " ${wpStartLocation?.longitude}")
         }
@@ -1030,6 +1219,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             cpSessionStartTime = System.currentTimeMillis()
             cpAverageSpeed.text = "N/A"
 
+            val checkpointLocation = GpsLocationDTO(
+                recordedAt = getCurrentISO8601Timestamp(),
+                latitude = currentLocation!!.latitude,
+                longitude = currentLocation!!.longitude,
+                accuracy = currentLocation!!.accuracy.toDouble(),
+                altitude = currentLocation!!.altitude,
+                verticalAccuracy = currentLocation!!.verticalAccuracyMeters.toDouble(),
+                gpsLocationTypeId = "00000000-0000-0000-0000-000000000003" // Checkpoint ID
+            )
+
+            synchronized(locationBuffer) {
+                locationBuffer.add(checkpointLocation)
+            }
+
+
         } else {
             Log.d(TAG, "Cannot add a checkpoint." +
                     " Tracking: $isTracking," +
@@ -1038,16 +1242,16 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     fun onClickOptionsButton(view: View) {
-        val bottomSheetDialog = BottomSheetDialog(this)
+        bottomSheetDialog = BottomSheetDialog(this)
         val sheetView = layoutInflater.inflate(R.layout.options, null)
-        bottomSheetDialog.setContentView(sheetView)
+        bottomSheetDialog?.setContentView(sheetView)
 
         val toolbar: LinearLayout = sheetView.findViewById(R.id.toolbar)
         val backButton: ImageButton = sheetView.findViewById(R.id.backButton)
         val showTracksButton: Button = sheetView.findViewById(R.id.btnShowTracks)
+        val logoutButton: Button = sheetView.findViewById(R.id.logoutButton)
         val recyclerView: RecyclerView = sheetView.findViewById(R.id.recyclerView)
         recyclerView.layoutManager = LinearLayoutManager(this)
-
 
         val tracks = dbHelper.getAllTracks()
 
@@ -1060,7 +1264,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
                 )
                 intent.putExtra("trackId", track.id)
                 startActivity(intent)
-                bottomSheetDialog.dismiss()
+                bottomSheetDialog?.dismiss()
             },
             onTrackDeleted = { track ->
                 showConfirmationDialog(
@@ -1093,9 +1297,34 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             showTracksButton.visibility = View.VISIBLE
         }
 
-        bottomSheetDialog.show()
+        // Logout button functionality
+        logoutButton.setOnClickListener {
+            showConfirmationDialog(
+                context = this,
+                title = "Logout",
+                message = "Are you sure you want to logout?",
+                onConfirm = {
+                    performLogout()
+                }
+            )
+        }
+
+        bottomSheetDialog?.show()
     }
 
+    fun performLogout() {
+        val sharedPref = getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
+        with(sharedPref.edit()) {
+            clear()
+            apply()
+        }
+
+        if (!isFinishing) {
+            val intent = Intent(this, LoginActivity::class.java)
+            startActivity(intent)
+            finish()
+        }
+    }
 
 
     fun onClickNorthUpButton(view: View) {
@@ -1126,4 +1355,5 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         isCompassVisible = !isCompassVisible
         compassImageView.visibility = if (isCompassVisible) View.VISIBLE else View.GONE
     }
+
 }

@@ -1,6 +1,8 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    id("org.jetbrains.kotlin.plugin.serialization")
+    id("com.github.ben-manes.versions")
 }
 
 android {
@@ -46,4 +48,14 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+
+    val ktorVersion = "3.0.1"
+
+    implementation("io.ktor:ktor-client-core:$ktorVersion")
+    implementation("io.ktor:ktor-client-okhttp:$ktorVersion")
+    implementation("io.ktor:ktor-client-resources:$ktorVersion")
+    implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
+    implementation("io.ktor:ktor-client-logging:$ktorVersion")
+    implementation("org.slf4j:slf4j-android:1.7.36")
 }

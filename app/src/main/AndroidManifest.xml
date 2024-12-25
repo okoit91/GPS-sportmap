@@ -25,21 +25,24 @@
 
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyCQSfQU83x56Tl9N3Ir28qtzn1e1PEpxj8"
-            />
+            android:value="AIzaSyCQSfQU83x56Tl9N3Ir28qtzn1e1PEpxj8" />
 
 
         <activity android:name=".TrackDetailActivity" />
+        <activity android:name=".RegisterActivity" />
+        <activity android:name=".MainActivity"
+            android:exported="true" />
 
-        <activity
-            android:name="ee.taltech.gps_sportmap.MainActivity"
+        <activity android:name=".LoginActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+
+
 
         <service
             android:name="ee.taltech.gps_sportmap.LocationForegroundService"
