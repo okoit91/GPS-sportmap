@@ -90,11 +90,11 @@ object WebClient {
 
                 return result
             } else {
-                Log.e(TAG, "Error: ${response.status} - $responseBody")
+                // Log.e(TAG, "Error: ${response.status} - $responseBody")
                 throw Exception("Login failed: ${response.status.description} - $responseBody")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error during login", e)
+            // Log.e(TAG, "Unexpected error during login", e)
             throw Exception("Unexpected error: ${e.message}")
         }
     }
@@ -121,11 +121,11 @@ object WebClient {
 
                 return result
             } else {
-                Log.e(TAG, "Error: ${response.status} - $responseBody")
+                // Log.e(TAG, "Error: ${response.status} - $responseBody")
                 throw Exception("Registration failed: ${response.status.description} - $responseBody")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Unexpected error during registration", e)
+            // Log.e(TAG, "Unexpected error during registration", e)
             throw Exception("Unexpected error: ${e.message}")
         }
     }
@@ -156,7 +156,7 @@ object WebClient {
 
             return response.id
         } catch (e: Exception) {
-            Log.e(TAG, "Error creating GPS session", e)
+            // Log.e(TAG, "Error creating GPS session", e)
             throw Exception("Failed to create GPS session: ${e.message}")
         }
     }
@@ -167,7 +167,7 @@ object WebClient {
         try {
             val serializedPayload = Json.encodeToString(locations)
 
-            Log.d("BulkUpload", "Sending payload: $serializedPayload")
+            // Log.d("BulkUpload", "Sending payload: $serializedPayload")
 
             val response: HttpResponse = client.post(endpoint) {
                 contentType(ContentType.Application.Json)
@@ -180,9 +180,9 @@ object WebClient {
                 throw Exception("Failed to upload locations in bulk: ${response.status} - $errorBody")
             }
 
-            Log.d("BulkUpload", "Successfully uploaded locations.")
+            // Log.d("BulkUpload", "Successfully uploaded locations.")
         } catch (e: Exception) {
-            Log.e("BulkUpload", "Error posting locations in bulk", e)
+            // Log.e("BulkUpload", "Error posting locations in bulk", e)
             throw e
         }
     }

@@ -14,7 +14,6 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.location.Location
-import android.location.LocationListener
 import android.location.LocationManager
 
 import android.os.Build
@@ -29,15 +28,16 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import ee.taltech.gps_sportmap.dal.DbHelper
 import ee.taltech.gps_sportmap.domain.Track
+import android.os.Handler
+import androidx.lifecycle.ViewModelProvider
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
@@ -56,7 +56,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, SensorEventListener {
+class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListener {
+
+
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val REQUEST_FINE_LOCATION = 999
+    }
+
+    private lateinit var viewModel: MainViewModel
 
     private lateinit var startButton: ImageButton
     private lateinit var stopButton: ImageButton
@@ -64,10 +72,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     private lateinit var dbHelper: DbHelper
 
     private lateinit var compassButton: Button
-    private var isCompassVisible = false
 
-    private var isTracking = false
-    private var currentLocation: Location? = null
+    private var isUpdateMetersReceiverRegistered = false
 
     private var locationService: LocationForegroundService? = null
     private var isBound = false
@@ -86,18 +92,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     private lateinit var locationManager: LocationManager
-    private var provider: String = LocationManager.GPS_PROVIDER
 
 
-    private var isTrackingUserRotation = true
-
-
-    private  var previousLocation : Location? = null
-    private var distanceSum: Double = 0.0
 
     lateinit var sensorManager: SensorManager
 
-    private var rotationSensor: Sensor? = null
     private var accelerometer: Sensor? = null
     private var magnetometer: Sensor? = null
 
@@ -111,15 +110,13 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     private lateinit var distanceCovered: TextView
 
 
-    private var startLocation: Location? = null
     private lateinit var sessionDuration: TextView
-    private var sessionStartTime: Long = 0L
 
     private var isNotificationReceiverRegistered = false
     private var isLocationReceiverRegistered = false
 
 
-    private val handler = android.os.Handler()
+    private val handler = Handler()
 
     private var bottomSheetDialog: BottomSheetDialog? = null
 
@@ -133,34 +130,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     private lateinit var flyWpToCurrent: TextView
     private lateinit var wpAverageSpeed: TextView
 
-    private val speeds = mutableListOf<Float>()
-
-    private var cpStartLocation: Location? = null
-    private var cpSessionStartTime: Long = 0L
-    private var regularDistanceFromCP = 0.0
-
-
-    private var wpStartLocation: Location? = null
-    private var wpSessionStartTime: Long = 0L
-    private var regularDistanceFromWP = 0.0
-
-    private val trackedPoints = mutableListOf<LatLng>()
-    private val checkpoints = mutableListOf<LatLng>()
-
-    private val locationBuffer = mutableListOf<GpsLocationDTO>()
-    private val bulkUploadInterval = 10
-    private var lastUploadTime = System.currentTimeMillis()
-
     private val notificationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 LocationForegroundService.ACTION_PLACE_CP -> {
-                    Log.d(TAG, "NotificationReceiver: PLACE_CP received")
-                    onClickCheckPointButton(View(context))
+                    // Log.d(TAG, "NotificationReceiver: PLACE_CP received")
+                    addCheckpoint()
                 }
+
                 LocationForegroundService.ACTION_PLACE_WP -> {
-                    Log.d(TAG, "NotificationReceiver: PLACE_WP received")
-                    onClickWayPointButton(View(context))
+                    // Log.d(TAG, "NotificationReceiver: PLACE_WP received")
+                    addWaypoint()
                 }
             }
         }
@@ -169,32 +149,58 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
     private val locationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            val latitude = intent?.getDoubleExtra("latitude", 0.0)
-            val longitude = intent?.getDoubleExtra("longitude", 0.0)
-            if (latitude != null && longitude != null) {
+            if (intent?.action == LocationForegroundService.ACTION_LOCATION_UPDATE) {
+                val latitude = intent.getDoubleExtra(LocationForegroundService.EXTRA_LATITUDE, 0.0)
+                val longitude = intent.getDoubleExtra(LocationForegroundService.EXTRA_LONGITUDE, 0.0)
+                val speed = intent.getFloatExtra("speed", 0f)
+                val bearing = intent.getFloatExtra("bearing", 0f)
                 val location = Location(LocationManager.GPS_PROVIDER).apply {
                     this.latitude = latitude
                     this.longitude = longitude
+                    this.time = System.currentTimeMillis()
+                    this.bearing = bearing
                 }
-                onLocationChanged(location)
+                handleNewLocationFromService(location, speed)
             }
         }
     }
 
+    private val updateMetersReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == "UPDATE_METERS") {
+                // Log.d(TAG, "UpdateMetersReceiver: UPDATE_METERS received")
+                updateDistanceFromCP()
+                updateFlyDistanceFromCP()
+                updateCpAverageSpeed()
+
+                updateDistanceFromWP()
+                updateFlyDistanceFromWP()
+                updateWpAverageSpeed()
+
+                val distanceFormatted = String.format("%.0f", LocationRepository.distanceSum)
+                distanceCovered.text = "$distanceFormatted m"
+
+                val cpDist = LocationRepository.regularDistanceFromCP
+                distanceCpToCurrent.text = if (cpDist > 0) "${cpDist.toInt()} m" else "N/A"
+
+                val wpDist = LocationRepository.regularDistanceFromWP
+                wpToCurrent.text = if (wpDist > 0) "${wpDist.toInt()} m" else "N/A"
+            }
+        }
+    }
 
     private val updateRunnable = object : Runnable {
         override fun run() {
-            Log.d(TAG, "Updating session duration")
-            val elapsedMillis = System.currentTimeMillis() - sessionStartTime
+            // Log.d(TAG, "Updating session duration")
+
+            val elapsedMillis = System.currentTimeMillis() - LocationRepository.sessionStartTime
             val elapsedSeconds = elapsedMillis / 1000.0
 
-            val distanceInKm = distanceSum / 1000.0
-
+            val distanceInKm = LocationRepository.distanceSum / 1000.0
             if (distanceInKm > 0) {
                 val elapsedMinutes = elapsedSeconds / 60.0
                 val minutesPerKm = elapsedMinutes / distanceInKm
-
-                val formattedSpeed = String.format("%.1f min", minutesPerKm)
+                val formattedSpeed = String.format("%.1f min/km", minutesPerKm)
                 averageSpeed.text = formattedSpeed
             } else {
                 averageSpeed.text = "N/A"
@@ -204,39 +210,19 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             val hours = totalSeconds / 3600
             val minutes = (totalSeconds % 3600) / 60
             val seconds = totalSeconds % 60
-
             val formattedDuration = String.format("%02d:%02d:%02d", hours, minutes, seconds)
             sessionDuration.text = formattedDuration
 
             updateCpAverageSpeed()
+            updateWpAverageSpeed()
 
             handler.postDelayed(this, 5000)
         }
     }
 
-
-    companion object {
-        private const val TAG = "MainActivity"
-        private const val LOCATION_PERMISSION_REQUEST_CODE = 100
-    }
-
     var map: GoogleMap? = null
     private var polyLine: Polyline? = null
-    private var polylineOptions = mutableListOf<PolylineOptions>()
 
-    private val requestPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val fineLocationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
-        val coarseLocationGranted = permissions[Manifest.permission.ACCESS_COARSE_LOCATION] ?: false
-
-        if (fineLocationGranted || coarseLocationGranted) {
-            Log.d(TAG, "Location permissions granted")
-            enableUserLocation()
-        } else {
-            Log.e(TAG, "Location permissions denied")
-        }
-    }
 
     private fun isDeviceReady(): Boolean {
         return try {
@@ -246,8 +232,30 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         }
     }
 
+    private fun addCheckpoint() {
+        if (viewModel.isTracking) {
+            val serviceIntent = Intent(this, LocationForegroundService::class.java).apply {
+                action = LocationForegroundService.ACTION_PLACE_CP
+            }
+            startService(serviceIntent)
+        } else {
+            // Log.d(TAG, "Cannot add a checkpoint. Not tracking.")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+
+        viewModel = ViewModelProvider(this)[MainViewModel::class.java]
+
+        if (!checkLocationPermission()) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
+                REQUEST_FINE_LOCATION
+            )
+        }
 
         val sharedPref = getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
         val isLoggedIn = sharedPref.getBoolean("isLoggedIn", false)
@@ -256,51 +264,36 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             val intent = Intent(this, LoginActivity::class.java)
             startActivity(intent)
             finish()
-            Log.d(TAG, "We did not log in!!")
+            // Log.d(TAG, "We did not log in!!")
             return
         }
 
-        Log.d(TAG, "We logged in!!")
+        // Log.d(TAG, "We logged in!!")
 
         setContentView(R.layout.activity_main)
+
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+        if (!checkLocationPermission()) {
+            // Log.e(TAG, "Location permissions not granted. Redirecting to login.")
+            val intent = Intent(this, LoginActivity::class.java)
+            startActivity(intent)
+            finish()
+            return
+        }
 
         compassImageView = findViewById(R.id.compassImageView)
 
 
         if (isDeviceReady()) {
             sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-
             accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
             magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
         }
 
 
-
-        if (!checkLocationPermission()) {
-            requestLocationPermission()
-            return
-        }
-
         dbHelper = DbHelper(this)
 
-        trackAdapter = TrackAdapter(
-            tracks = emptyList(),
-            onTrackSelected = {},
-            onTrackDeleted = {},
-            onTrackRenamed = {}
-        )
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(
-                locationReceiver,
-                IntentFilter("LOCATION_UPDATE"),
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            registerReceiver(locationReceiver, IntentFilter("LOCATION_UPDATE"),
-                RECEIVER_NOT_EXPORTED
-            )
-        }
 
         // UI elements
 
@@ -321,63 +314,154 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         wpAverageSpeed = findViewById(R.id.wpAverageSpeed)
 
 
+        trackAdapter = TrackAdapter(
+            tracks = emptyList(),
+            onTrackSelected = {},
+            onTrackDeleted = {},
+            onTrackRenamed = {}
+        )
+
+
+        if (viewModel.isTracking) {
+            startButton.visibility = View.GONE
+            stopButton.visibility = View.VISIBLE
+
+            handler.post(updateRunnable)
+
+
+            val lastLocation = LocationRepository.currentLocation
+            if (lastLocation != null && map != null && viewModel.isTrackingUserRotation) {
+                val latLng = LatLng(lastLocation.latitude, lastLocation.longitude)
+                map!!.animateCamera(
+                    CameraUpdateFactory.newCameraPosition(
+                        CameraPosition.builder()
+                            .target(latLng)
+                            .zoom(17f)
+                            .bearing(lastLocation.bearing)
+                            .tilt(0f)
+                            .build()
+                    )
+                )
+            }
+
+            val distanceFormatted = String.format("%.0f", LocationRepository.distanceSum)
+            distanceCovered.text = "$distanceFormatted m"
+
+            val cpDist = LocationRepository.regularDistanceFromCP
+            distanceCpToCurrent.text = if (cpDist > 0) "${cpDist.toInt()} m" else "N/A"
+        } else {
+            startButton.visibility = View.VISIBLE
+            stopButton.visibility = View.GONE
+        }
+
 
         // map
-        val mapFragment = supportFragmentManager.findFragmentById(R.id.mapFragment) as SupportMapFragment
+        val mapFragment =
+            supportFragmentManager.findFragmentById(R.id.mapFragment) as SupportMapFragment
         mapFragment.getMapAsync(this)
-
-        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-
-        val providers = locationManager.getProviders(true)
-
-        // permissions
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED &&
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED &&
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED &&
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.FOREGROUND_SERVICE)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            requestPermissions(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.POST_NOTIFICATIONS,
-                    Manifest.permission.FOREGROUND_SERVICE
-                ),
-                123
-            )
-            Log.e(TAG, "No rights yet, requested permissions.")
-        }
-
-
-        val location = locationManager.getLastKnownLocation(provider)
-
-        if (providers.isEmpty()) {
-            Log.e(TAG, "Location providers empty!")
-            finish()
-        } else {
-            Log.d(TAG, providers.toString())
-        }
-
-        if (location != null) {
-            Log.d(TAG, "Initial location: ${location.latitude}, ${location.longitude}")
-            onLocationChanged(location)
-        }
-
-        requestLocationPermissions()
     }
 
-    override fun onStart() {
-        super.onStart()
-        val intent = Intent(this, LocationForegroundService::class.java)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_FINE_LOCATION) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                // Log.d(TAG, "onRequestPermissionsResult: FINE_LOCATION granted.")
+            } else {
+                // Log.e(TAG, "onRequestPermissionsResult: FINE_LOCATION denied.")
+            }
+        }
+    }
+
+
+    private fun checkLocationPermission(): Boolean {
+        return ActivityCompat.checkSelfPermission(
+            this,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    override fun onResume() {
+        super.onResume()
+
+        if (viewModel.isTracking) {
+            handler.post(updateRunnable)
+        }
+
+        if (!isLocationReceiverRegistered) {
+            val locationFilter = IntentFilter(LocationForegroundService.ACTION_LOCATION_UPDATE)
+            LocalBroadcastManager.getInstance(this).registerReceiver(locationReceiver, locationFilter)
+            isLocationReceiverRegistered = true
+        }
+
+        if (!isNotificationReceiverRegistered) {
+            val notificationFilter = IntentFilter().apply {
+                addAction(LocationForegroundService.ACTION_PLACE_CP)
+                addAction(LocationForegroundService.ACTION_PLACE_WP)
+            }
+            LocalBroadcastManager.getInstance(this).registerReceiver(notificationReceiver, notificationFilter)
+            isNotificationReceiverRegistered = true
+        }
+
+        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_UI)
+
+        if (map != null) {
+            rebuildPolylineFromRepository()
+        }
+
+        if (!isUpdateMetersReceiverRegistered) {
+            val filter = IntentFilter("UPDATE_METERS")
+            LocalBroadcastManager.getInstance(this).registerReceiver(updateMetersReceiver, filter)
+            isUpdateMetersReceiverRegistered = true
+        }
+
+        refreshUI()
+    }
+
+
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(updateRunnable)
+        sensorManager.unregisterListener(this)
+
+        if (isLocationReceiverRegistered) {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(locationReceiver)
+            isLocationReceiverRegistered = false
+        }
+        if (isNotificationReceiverRegistered) {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(notificationReceiver)
+            isNotificationReceiverRegistered = false
+        }
+
+        if (isUpdateMetersReceiverRegistered) {
+            LocalBroadcastManager.getInstance(this).unregisterReceiver(updateMetersReceiver)
+            isUpdateMetersReceiverRegistered = false
+        }
+    }
+
+    private fun refreshUI() {
+        LocationRepository.currentLocation?.let { location ->
+            updateDistanceFromCP()
+            updateFlyDistanceFromCP()
+            updateCpAverageSpeed()
+
+            updateDistanceFromWP()
+            updateFlyDistanceFromWP()
+            updateWpAverageSpeed()
+
+            val distanceFormatted = String.format("%.0f", LocationRepository.distanceSum)
+            distanceCovered.text = "$distanceFormatted m"
+
+            val cpDist = LocationRepository.regularDistanceFromCP
+            distanceCpToCurrent.text = if (cpDist > 0) "${cpDist.toInt()} m" else "N/A"
+
+            val wpDist = LocationRepository.regularDistanceFromWP
+            wpToCurrent.text = if (wpDist > 0) "${wpDist.toInt()} m" else "N/A"
         }
     }
 
@@ -389,96 +473,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-
-        if (isTracking) {
-            handler.post(updateRunnable)
-        }
-
-        if (!isNotificationReceiverRegistered) {
-            val notificationFilter = IntentFilter().apply {
-                addAction(LocationForegroundService.ACTION_PLACE_CP)
-                addAction(LocationForegroundService.ACTION_PLACE_WP)
-            }
-
-            LocalBroadcastManager.getInstance(this)
-                .registerReceiver(notificationReceiver, notificationFilter)
-            isNotificationReceiverRegistered = true
-            Log.d(TAG, "notificationReceiver registered")
-
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(notificationReceiver, notificationFilter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(notificationReceiver, notificationFilter, RECEIVER_NOT_EXPORTED)
-            }
-            isNotificationReceiverRegistered = true
-            Log.d(TAG, "notificationReceiver registered")
-        }
-
-        if (!isLocationReceiverRegistered) {
-            val locationFilter = IntentFilter("LOCATION_UPDATE")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                registerReceiver(locationReceiver, locationFilter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                registerReceiver(locationReceiver, locationFilter, RECEIVER_NOT_EXPORTED)
-            }
-            isLocationReceiverRegistered = true
-        }
-
-        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI)
-        sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_UI)
-
-        if (map != null) {
-            rebuildPolylineFromMemory()
-        }
-    }
-
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
-            if (grantResults.isNotEmpty() &&
-                grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                startLocationService()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Location permission is required for this feature",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-    }
-
-    private fun startLocationService() {
-        if (checkLocationPermission()) {
-            val intent = Intent(this, LocationForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
-            }
-        } else {
-            requestLocationPermission()
-        }
-    }
-
-    private fun requestLocationPermission() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ),
-            LOCATION_PERMISSION_REQUEST_CODE
-        )
-    }
 
     override fun onDestroy() {
         super.onDestroy()
@@ -486,58 +480,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         bottomSheetDialog?.dismiss()
         bottomSheetDialog = null
 
-        if (isNotificationReceiverRegistered) {
-            LocalBroadcastManager.getInstance(this)
-                .unregisterReceiver(notificationReceiver)
-            isNotificationReceiverRegistered = false
-            Log.d(TAG, "notificationReceiver unregistered in onDestroy")
-        }
-        if (isLocationReceiverRegistered) {
-            unregisterReceiver(locationReceiver)
-            isLocationReceiverRegistered = false
-        }
-
-
-    }
-
-    private fun checkLocationPermission(): Boolean {
-        return ActivityCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED ||
-                ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED
-    }
-
-
-    override fun onPause() {
-        super.onPause()
-        handler.removeCallbacks(updateRunnable)
-
-        if (::sensorManager.isInitialized) {
-            sensorManager.unregisterListener(this)
-        }
-
-        if (isLocationReceiverRegistered) {
-            unregisterReceiver(locationReceiver)
-            isLocationReceiverRegistered = false
-        }
-
-    }
-
-    private fun startLocationUpdates() {
-        if (ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED || ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
-            locationManager.requestLocationUpdates(provider, 1000, 1f, this)
-        }
     }
 
     private fun getColorForSpeed(speed: Float): Int {
@@ -550,8 +492,8 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     private fun resetOverallData() {
-        distanceSum = 0.0
-        sessionStartTime = 0L
+        LocationRepository.distanceSum = 0.0
+        LocationRepository.sessionStartTime = 0L
 
         distanceCovered.text = "N/A"
         averageSpeed.text = "N/A"
@@ -559,9 +501,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     private fun resetCPValues() {
-        cpStartLocation = null
-        cpSessionStartTime = 0L
-        regularDistanceFromCP = 0.0
+        LocationRepository.cpStartLocation = null
+        LocationRepository.cpSessionStartTime = 0L
+        LocationRepository.regularDistanceFromCP = 0.0
 
         distanceCpToCurrent.text = "N/A"
         flyCpToCurrent.text = "N/A"
@@ -569,165 +511,28 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     private fun resetWPValues() {
-        wpStartLocation = null
-        wpSessionStartTime = 0L
-        regularDistanceFromWP = 0.0
+        LocationRepository.wpStartLocation = null
+        LocationRepository.wpSessionStartTime = 0L
+        LocationRepository.regularDistanceFromWP = 0.0
 
         wpToCurrent.text = "N/A"
         flyWpToCurrent.text = "N/A"
         wpAverageSpeed.text = "N/A"
     }
 
-    private fun stopLocationUpdates() {
-        locationManager.removeUpdates(this)
-    }
-
-    override fun onLocationChanged(location: Location) {
-
-        val gpsLocation = GpsLocationDTO(
-            recordedAt = getCurrentISO8601Timestamp(),
-            latitude = location.latitude,
-            longitude = location.longitude,
-            accuracy = location.accuracy.toDouble(),
-            altitude = location.altitude,
-            verticalAccuracy = location.verticalAccuracyMeters.toDouble(),
-            gpsLocationTypeId = "00000000-0000-0000-0000-000000000001"
-        )
-
-        synchronized(locationBuffer) {
-            locationBuffer.add(gpsLocation)
-        }
-
-        if (locationBuffer.size >= bulkUploadInterval ||
-            System.currentTimeMillis() - lastUploadTime > 60_000) {
-            sendLocationsInBulk()
-            lastUploadTime = System.currentTimeMillis()
-        }
 
 
-        val speed = if (previousLocation != null) {
-            val distance = previousLocation!!.distanceTo(location)
-            val time = (location.time - previousLocation!!.time) / 1_000.0
-            if (time > 0) distance / time * 3.6f else 0f
-        } else {
-            0f
-        }
-
-        val cpDistanceValue = cpStartLocation?.distanceTo(location) ?: 0.0
-        val wpDistanceValue = wpStartLocation?.distanceTo(location) ?: 0.0
-
-        val cpFlyDist = currentLocation?.let { cpStartLocation?.distanceTo(it) } ?: 0.0
-        val wpFlyDist = currentLocation?.let { wpStartLocation?.distanceTo(it) } ?: 0.0
-
-        val cpAvgSpdValue = calculateAverageSpeed(cpStartLocation, cpSessionStartTime)
-        val wpAvgSpdValue = calculateAverageSpeed(wpStartLocation, wpSessionStartTime)
-
-        val cpDistanceText = String.format("%.0f m", cpDistanceValue)
-        val wpDistanceText = String.format("%.0f m", wpDistanceValue)
-        val cpFlyDistText = String.format("%.0f m", cpFlyDist)
-        val wpFlyDistText = String.format("%.0f m", wpFlyDist)
-        val cpAvgSpdText = String.format("%.1f min", cpAvgSpdValue)
-        val wpAvgSpdText = String.format("%.1f min", wpAvgSpdValue)
-
-        locationService?.updateNotification(
-            cpDistance = cpDistanceText,
-            cpFlyDist = cpFlyDistText,
-            cpAvgSpd = cpAvgSpdText,
-            wpDistance = wpDistanceText,
-            wpFlyDist = wpFlyDistText,
-            wpAvgSpd = wpAvgSpdText
-        )
-
-        currentLocation = location
-
-        if (map == null) {
-            return
-        }
-
-        val latLng = LatLng(location.latitude, location.longitude)
-        trackedPoints.add(latLng)
-        speeds.add(speed.toFloat())
-
-        if (isTrackingUserRotation) {
-            map!!.animateCamera(
-                CameraUpdateFactory.newCameraPosition(
-                    CameraPosition.builder()
-                        .target(latLng)
-                        .zoom(17f)
-                        .bearing(location.bearing)
-                        .tilt(0f)
-                        .build()
-                )
-            )
-        } else {
-            map!!.moveCamera(CameraUpdateFactory.newLatLng(latLng))
-        }
-
-        if (previousLocation != null) {
-            val distance = previousLocation!!.distanceTo(location)
-            distanceSum += distance
-            val distanceFormatted = String.format("%.0f", distanceSum)
-            distanceCovered.text = "$distanceFormatted m"
-        }
-
-        updateDistanceFromWP(location)
-        updateFlyDistanceFromWP()
-        updateWpAverageSpeed()
-
-        updateDistanceFromCP(location)
-        updateFlyDistanceFromCP()
-        updateCpAverageSpeed()
-
-        rebuildPolylineFromMemory()
-
-        previousLocation = location
-    }
-
-    private fun sendLocationsInBulk() {
-        CoroutineScope(Dispatchers.IO).launch {
-            val sessionId = getCurrentGpsSessionId()
-            val bulkRequestBody: List<GpsLocationDTO>
-
-            synchronized(locationBuffer) {
-                if (locationBuffer.isEmpty()) return@launch
-                bulkRequestBody = locationBuffer.toList()
-                locationBuffer.clear()
-            }
-
-            if (!isInternetAvailable(this@MainActivity)) {
-                Log.w("BulkUpload", "No internet connection. Locations will be kept in the buffer.")
-                synchronized(locationBuffer) {
-                    locationBuffer.addAll(bulkRequestBody) // Re-add locations to buffer
-                }
-                return@launch
-            }
-
-            try {
-                if (sessionId != null) {
-                    WebClient.postLocationsInBulk(context = this@MainActivity, sessionId, bulkRequestBody)
-                }
-                Log.d("BulkUpload", "Uploaded ${bulkRequestBody.size} locations successfully.")
-            } catch (e: Exception) {
-                Log.e("BulkUpload", "Failed to upload locations: ${e.message}")
-                synchronized(locationBuffer) {
-                    locationBuffer.addAll(bulkRequestBody) // Re-add locations to buffer
-                }
-            }
-        }
-    }
-
-
-    private fun calculateAverageSpeed(startLocation: Location?, startTime: Long): Double {
-        if (startLocation == null || startTime == 0L || regularDistanceFromCP == 0.0) return 0.0
-
+    private fun calculateAverageSpeed(
+        startLocation: Location?,
+        startTime: Long,
+        distanceSum: Double
+    ): Double {
+        if (startLocation == null || startTime == 0L || distanceSum == 0.0) return 0.0
         val elapsedTimeMillis = System.currentTimeMillis() - startTime
         val elapsedMinutes = elapsedTimeMillis / 60000.0
-
-        val distanceInKm = regularDistanceFromCP / 1000.0
-
+        val distanceInKm = distanceSum / 1000.0
         return if (distanceInKm > 0) elapsedMinutes / distanceInKm else 0.0
     }
-
 
     override fun onSensorChanged(event: SensorEvent?) {
 
@@ -743,8 +548,10 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
                     accelerometerReading.size
                 )
             }
+
             Sensor.TYPE_MAGNETIC_FIELD -> {
-                System.arraycopy(event.values,
+                System.arraycopy(
+                    event.values,
                     0,
                     magnetometerReading,
                     0,
@@ -757,8 +564,9 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
                 rotationMatrix,
                 null,
                 accelerometerReading,
-                magnetometerReading)
-            ) {
+                magnetometerReading
+            )
+        ) {
             SensorManager.getOrientation(rotationMatrix, orientationAngles)
             val azimuthInRadians = orientationAngles[0]
             val azimuthInDegrees = Math.toDegrees(azimuthInRadians.toDouble()).toFloat()
@@ -769,100 +577,86 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        Log.d(TAG, "Sensor accuracy changed: $accuracy")
+        // Log.d(TAG, "Sensor accuracy changed: $accuracy")
     }
 
-
-    private fun requestLocationPermissions() {
-        if (ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED &&
-            ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_COARSE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) {
-
-            requestPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
-            )
-        } else {
-            enableUserLocation()
-        }
-    }
-
-    private fun enableUserLocation() {
-        if (ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_FINE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED ||
-            ActivityCompat.checkSelfPermission(
-                this, Manifest.permission.ACCESS_COARSE_LOCATION)
-            == PackageManager.PERMISSION_GRANTED) {
-            map?.isMyLocationEnabled = true
-        } else {
-            Log.e(TAG, "Location permissions are not granted")
-        }
-    }
 
     override fun onMapReady(googleMap: GoogleMap) {
         this.map = googleMap
 
         map?.let { map ->
             map.uiSettings.isCompassEnabled = false
-            map.isMyLocationEnabled = checkLocationPermission()
+            if (ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED || ActivityCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+            ) {
+                map.isMyLocationEnabled = true
+
+                val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+                val provider = LocationManager.GPS_PROVIDER
+                val location = locationManager.getLastKnownLocation(provider)
+
+                if (location != null) {
+                    val userLatLng = LatLng(location.latitude, location.longitude)
+                    if (viewModel.isTracking && viewModel.isTrackingUserRotation) {
+                        map.moveCamera(CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.builder()
+                                .target(userLatLng)
+                                .zoom(17f)
+                                .bearing(location.bearing)
+                                .tilt(0f)
+                                .build()
+                        ))
+                    } else {
+                        map.moveCamera(CameraUpdateFactory.newLatLngZoom(userLatLng, 17.0f))
+                    }
+                    // Log.d(TAG, "Centered map on user's location: ${userLatLng.latitude}, ${userLatLng.longitude}")
+                } else {
+                    // Log.e(TAG, "Last known location is not available. Defaulting to Tallinn.")
+                    val tallinn = LatLng(59.4, 24.7) // Default location
+                    map.moveCamera(CameraUpdateFactory.newLatLngZoom(tallinn, 17.0f))
+                }
+            } else {
+                // Log.e(TAG, "Location permissions are not granted.")
+            }
         }
 
-
-
-        val tallinn = LatLng(59.4, 24.7)
-        map?.moveCamera(CameraUpdateFactory.newLatLngZoom(tallinn, 17.0f))
-        enableUserLocation()
-
-        rebuildPolylineFromMemory()
+        rebuildPolylineFromRepository()
     }
 
-    private fun rebuildPolylineFromMemory() {
-        if (trackedPoints.isNotEmpty() && speeds.isNotEmpty()) {
+    private fun rebuildPolylineFromRepository() {
+        // Log.d(TAG, "Rebuilding polyline from repository. Total points: ${LocationRepository.trackedPoints.size}")
 
+        map?.clear()
 
-            polylineOptions.clear()
-            map?.clear()
+        for (i in 1 until LocationRepository.trackedPoints.size) {
+            val startPoint = LocationRepository.trackedPoints[i - 1]
+            val endPoint = LocationRepository.trackedPoints[i]
+            val segmentSpeed = LocationRepository.speeds.getOrElse(i - 1) { 0f }
+            val color = getColorForSpeed(segmentSpeed)
 
-            // gradient polyline
-            for (i in 1 until trackedPoints.size) {
-                val startPoint = trackedPoints[i - 1]
-                val endPoint = trackedPoints[i]
-                val speed = speeds[i - 1]
-
-                val color = getColorForSpeed(speed)
-                val segment = PolylineOptions()
+            map?.addPolyline(
+                PolylineOptions()
                     .add(startPoint, endPoint)
                     .color(color)
                     .width(10f)
-
-                polylineOptions.add(segment)
-                map?.addPolyline(segment)
-            }
-
-            // cp markers
-            for (checkpoint in checkpoints) {
-                map?.addMarker(
-                    MarkerOptions()
-                        .position(checkpoint)
-                        .title("Checkpoint")
-                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE))
-                )
-            }
-
-
-            val lastLatLng = trackedPoints.last()
-            val tempLocation = Location(provider).apply {
-                latitude = lastLatLng.latitude
-                longitude = lastLatLng.longitude
-            }
-            previousLocation = tempLocation
+            )
         }
+
+        for (checkpoint in LocationRepository.checkpoints) {
+            map?.addMarker(
+                MarkerOptions()
+                    .position(checkpoint)
+                    .title("Checkpoint")
+                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE))
+            )
+        }
+
+        // Log.d(TAG, "Rebuilt polyline with ${LocationRepository.trackedPoints.size - 1} segments")
     }
 
     private fun showRenameTrackDialog(track: Track) {
@@ -891,13 +685,17 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     fun onClickStartButton(view: View) {
+        if (!checkLocationPermission()) {
+            Toast.makeText(this, "Grant location permission first!", Toast.LENGTH_SHORT).show()
+            return
+        }
         CoroutineScope(Dispatchers.Main).launch {
             try {
-
                 val sessionId = createAndStartGpsSession()
 
                 val serviceIntent = Intent(this@MainActivity, LocationForegroundService::class.java).apply {
                     putExtra("GpsSessionId", sessionId)
+                    action = LocationForegroundService.ACTION_START_TRACKING
                 }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -906,28 +704,39 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
                     startService(serviceIntent)
                 }
 
-                startLocation = null
-                currentLocation = null
-                previousLocation = null
-                cpStartLocation = null
+                val bindResult = bindService(
+                    Intent(this@MainActivity, LocationForegroundService::class.java),
+                    serviceConnection,
+                    Context.BIND_AUTO_CREATE
+                )
+                // Log.d(TAG, "bindService result = $bindResult")
 
-                trackedPoints.clear()
-                checkpoints.clear()
-
-                isTracking = true
+                viewModel.isTracking = true
+                viewModel.isTrackingUserRotation = true
                 startButton.visibility = View.GONE
                 stopButton.visibility = View.VISIBLE
-                startLocationUpdates()
 
-                if (startLocation == null) {
-                    startLocation = currentLocation
-                }
-
-                sessionStartTime = System.currentTimeMillis()
+                LocationRepository.sessionStartTime = System.currentTimeMillis()
                 handler.post(updateRunnable)
 
+                val currentLocation = LocationRepository.currentLocation
+                if (currentLocation != null && map != null) {
+                    val latLng = LatLng(currentLocation.latitude, currentLocation.longitude)
+                    map!!.animateCamera(
+                        CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.builder()
+                                .target(latLng)
+                                .zoom(17f)
+                                .bearing(currentLocation.bearing)
+                                .tilt(0f)
+                                .build()
+                        )
+                    )
+                }
+
+
             } catch (e: Exception) {
-                Log.e("GpsSession", "Failed to start session: ${e.message}")
+                // Log.e(TAG, "Failed to start session: ${e.message}")
                 Snackbar.make(
                     findViewById(android.R.id.content),
                     "Failed to start session: ${e.message}",
@@ -946,7 +755,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
                 gpsSessionTypeId = "00000000-0000-0000-0000-000000000001"
             )
 
-            // Save the session ID in SharedPreferences
             val sharedPref = getSharedPreferences("AppPreferences", Context.MODE_PRIVATE)
             with(sharedPref.edit()) {
                 putString("GpsSessionId", sessionId)
@@ -963,53 +771,78 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     fun onClickStopButton(view: View) {
+        // Log.d(TAG, "onClickStopButton: Pressed stop")
+
+        if (!viewModel.isTracking) {
+            Log.w(TAG, "onClickStopButton: Was not tracking, ignoring.")
+            return
+        }
+
         showConfirmationDialog(
             context = this,
             title = "Confirm Stop",
             message = "Are you sure you want to stop tracking?",
             onConfirm = {
-                val serviceIntent = Intent(this, LocationForegroundService::class.java)
-                stopService(serviceIntent)
+                try {
+                    val serviceIntent = Intent(this, LocationForegroundService::class.java)
+                    // Log.d(TAG, "Stopping service via stopService")
+                    stopService(serviceIntent)
 
-                isTracking = false
-                stopButton.visibility = View.GONE
-                startButton.visibility = View.VISIBLE
-                stopLocationUpdates()
-
-                CoroutineScope(Dispatchers.IO).launch {
-                    val sessionId = getCurrentGpsSessionId()
-                    val bulkRequestBody: List<GpsLocationDTO>
-
-                    synchronized(locationBuffer) {
-                        if (locationBuffer.isEmpty()) {
-                            clearTrackingData()
-                            return@launch
-                        }
-                        bulkRequestBody = locationBuffer.toList()
+                    // Unbind if bound
+                    if (isBound) {
+                        // Log.d(TAG, "Unbinding from service in onClickStopButton")
+                        unbindService(serviceConnection)
+                        isBound = false
                     }
 
-                    try {
-                        if (sessionId != null && isInternetAvailable(this@MainActivity)) {
-                            WebClient.postLocationsInBulk(
-                                context = this@MainActivity,
-                                sessionId = sessionId,
-                                locations = bulkRequestBody
-                            )
-                            Log.d("StopButton", "Remaining locations uploaded successfully.")
+                    viewModel.isTracking = false
+                    stopButton.visibility = View.GONE
+                    startButton.visibility = View.VISIBLE
 
-                            synchronized(locationBuffer) {
-                                locationBuffer.clear()
+                    clearTrackingData()
+
+                    locationService?.let { service ->
+                        CoroutineScope(Dispatchers.IO).launch {
+                            val sessionId = getCurrentGpsSessionId()
+                            val bulkRequestBody: List<GpsLocationDTO>
+
+                            synchronized(service.locationBuffer) {
+                                if (service.locationBuffer.isEmpty()) {
+                                    // Log.d(TAG, "Location buffer is empty. No data to upload.")
+                                    return@launch
+                                }
+                                bulkRequestBody = service.locationBuffer.toList()
                             }
-                        } else {
-                            Log.e("StopButton", "No internet connection. Buffer not cleared.")
+
+                            try {
+                                if (sessionId != null && isInternetAvailable(this@MainActivity)) {
+                                    WebClient.postLocationsInBulk(
+                                        context = this@MainActivity,
+                                        sessionId = sessionId,
+                                        locations = bulkRequestBody
+                                    )
+                                    // Log.d(TAG, "Remaining locations uploaded successfully.")
+
+                                    synchronized(service.locationBuffer) {
+                                        service.locationBuffer.clear()
+                                    }
+                                } else {
+                                    // Log.e(TAG, "No internet or sessionId null. Buffer not cleared.")
+                                }
+                            } catch (e: Exception) {
+                                // Log.e(TAG, "Failed to upload remaining locations: ${e.message}")
+                            } finally {
+                                // Ensure data is cleared after upload attempt
+                                withContext(Dispatchers.Main) {
+                                    clearTrackingData()
+                                }
+                            }
                         }
-                    } catch (e: Exception) {
-                        Log.e("StopButton", "Failed to upload remaining locations: ${e.message}")
-                    } finally {
-                        withContext(Dispatchers.Main) {
-                            clearTrackingData()
-                        }
+                    } ?: run {
+                        // Log.e(TAG, "locationService is null. Cannot access locationBuffer.")
                     }
+                } catch (ex: Exception) {
+                    // Log.e(TAG, "onClickStopButton Exception: ${ex.message}")
                 }
             }
         )
@@ -1019,10 +852,14 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     private fun clearTrackingData() {
         saveTrack()
         handler.removeCallbacks(updateRunnable)
-        map?.clear()
-        polyLine?.remove()
-        trackedPoints.clear()
-        checkpoints.clear()
+
+        CoroutineScope(Dispatchers.Main).launch {
+            map?.clear()
+            polyLine?.remove()
+        }
+
+        LocationRepository.trackedPoints.clear()
+        LocationRepository.checkpoints.clear()
 
         resetOverallData()
         resetCPValues()
@@ -1046,7 +883,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             state = currentTrackState
         )
         dbHelper.saveTrack(track)
-        Toast.makeText(this, "Track saved", Toast.LENGTH_SHORT).show()
+
     }
 
     private fun generateTrackStateJson(): String {
@@ -1055,21 +892,21 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         val checkpointsArray = org.json.JSONArray()
         val speedsArray = org.json.JSONArray()
 
-        for (point in trackedPoints) {
+        for (point in LocationRepository.trackedPoints) {
             val pointObject = org.json.JSONObject()
             pointObject.put("latitude", point.latitude)
             pointObject.put("longitude", point.longitude)
             trackPointsArray.put(pointObject)
         }
 
-        for (checkpoint in checkpoints) {
+        for (checkpoint in LocationRepository.checkpoints) {
             val checkpointObject = org.json.JSONObject()
             checkpointObject.put("latitude", checkpoint.latitude)
             checkpointObject.put("longitude", checkpoint.longitude)
             checkpointsArray.put(checkpointObject)
         }
 
-        for (speed in speeds) {
+        for (speed in LocationRepository.speeds) {
             speedsArray.put(speed)
         }
 
@@ -1080,36 +917,35 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         return jsonObject.toString()
     }
 
-    private fun updateDistanceFromCP(location: Location) {
-        if (cpStartLocation != null && currentLocation != null) {
-            if(previousLocation != null) {
-                val incrementalDistance = previousLocation!!.distanceTo(location)
-                regularDistanceFromCP += incrementalDistance
+    private fun updateDistanceFromCP() {
+        if (LocationRepository.cpStartLocation != null) {
+            val cpDist = LocationRepository.regularDistanceFromCP
+            distanceCpToCurrent.text = if (cpDist > 0) {
+                String.format("%.0f m", cpDist)
+            } else {
+                "0 m"
             }
-
-
-
-            distanceCpToCurrent.text = String.format("%.0f m", regularDistanceFromCP)
         } else {
             distanceCpToCurrent.text = "N/A"
         }
     }
 
-    private fun updateDistanceFromWP(location: Location) {
-        if (wpStartLocation != null) {
-            if (previousLocation != null) {
-                val incrementalDistance = previousLocation!!.distanceTo(location)
-                regularDistanceFromWP += incrementalDistance
+    private fun updateDistanceFromWP() {
+        if (LocationRepository.wpStartLocation != null) {
+            val wpDist = LocationRepository.regularDistanceFromWP
+            wpToCurrent.text = if (wpDist > 0) {
+                String.format("%.0f m", wpDist)
+            } else {
+                "0 m"
             }
-            wpToCurrent.text = String.format("%.0f m", regularDistanceFromWP)
         } else {
             wpToCurrent.text = "N/A"
         }
     }
 
     private fun updateFlyDistanceFromWP() {
-        if (wpStartLocation != null && currentLocation != null) {
-            val flyDistance = wpStartLocation!!.distanceTo(currentLocation!!)
+        if (LocationRepository.wpStartLocation != null && LocationRepository.currentLocation != null) {
+            val flyDistance = LocationRepository.wpStartLocation!!.distanceTo(LocationRepository.currentLocation!!)
             flyWpToCurrent.text = String.format("%.0f m", flyDistance)
         } else {
             flyWpToCurrent.text = "N/A"
@@ -1117,11 +953,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     private fun updateWpAverageSpeed() {
-        if (wpStartLocation != null && regularDistanceFromWP > 0) {
-            val elapsedMillis = System.currentTimeMillis() - wpSessionStartTime
+        if (LocationRepository.wpStartLocation != null && LocationRepository.regularDistanceFromWP > 0) {
+            val elapsedMillis = System.currentTimeMillis() - LocationRepository.wpSessionStartTime
             val elapsedMinutes = elapsedMillis / 60000.0 // to min
 
-            val distanceInKm = regularDistanceFromWP / 1000.0 // to km
+            val distanceInKm = LocationRepository.regularDistanceFromWP / 1000.0 // to km
 
             if (distanceInKm > 0) {
                 val minutesPerKm = elapsedMinutes / distanceInKm
@@ -1136,11 +972,11 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
 
     private fun updateCpAverageSpeed() {
-        if (cpStartLocation != null && regularDistanceFromCP > 0) {
-            val elapsedMillis = System.currentTimeMillis() - cpSessionStartTime
+        if (LocationRepository.cpStartLocation != null && LocationRepository.regularDistanceFromCP > 0) {
+            val elapsedMillis = System.currentTimeMillis() - LocationRepository.cpSessionStartTime
             val elapsedMinutes = elapsedMillis / 60000.0 // to min
 
-            val distanceInKm = regularDistanceFromCP / 1000.0 // to km
+            val distanceInKm = LocationRepository.regularDistanceFromCP / 1000.0 // to km
 
             if (distanceInKm > 0) {
                 val minutesPerKm = elapsedMinutes / distanceInKm
@@ -1159,46 +995,35 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
         when (intent.action) {
             "ACTION_PLACE_CP" -> {
                 onClickCheckPointButton(View(this))
-                Log.d(TAG, "Place Checkpoint action triggered from notification")
+                // Log.d(TAG, "Place Checkpoint action triggered from notification")
             }
+
             "ACTION_PLACE_WP" -> {
                 onClickWayPointButton(View(this))
-                Log.d(TAG, "Place Waypoint action triggered from notification")
+                // Log.d(TAG, "Place Waypoint action triggered from notification")
             }
         }
     }
 
     fun onClickWayPointButton(view: View) {
-        if (isTracking && currentLocation != null) {
-            wpStartLocation = currentLocation
-            regularDistanceFromWP = 0.0
-            wpSessionStartTime = System.currentTimeMillis()
+        addWaypoint()
+    }
 
-            wpToCurrent.text = "0 m"
-            flyWpToCurrent.text = "N/A"
-            wpAverageSpeed.text = "N/A"
 
-            val waypointLocation = GpsLocationDTO(
-                recordedAt = getCurrentISO8601Timestamp(),
-                latitude = currentLocation!!.latitude,
-                longitude = currentLocation!!.longitude,
-                accuracy = currentLocation!!.accuracy.toDouble(),
-                altitude = currentLocation!!.altitude,
-                verticalAccuracy = currentLocation!!.verticalAccuracyMeters.toDouble(),
-                gpsLocationTypeId = "00000000-0000-0000-0000-000000000002"
-            )
-
-            synchronized(locationBuffer) {
-                locationBuffer.add(waypointLocation)
+    private fun addWaypoint() {
+        if (viewModel.isTracking) {
+            val serviceIntent = Intent(this, LocationForegroundService::class.java).apply {
+                action = LocationForegroundService.ACTION_PLACE_WP
             }
-
-            Log.d(TAG, "Waypoint saved at: ${wpStartLocation?.latitude}," +
-                    " ${wpStartLocation?.longitude}")
+            startService(serviceIntent)
+        } else {
+            // Log.d(TAG, "Cannot add a waypoint. Not tracking.")
         }
     }
+
     private fun updateFlyDistanceFromCP() {
-        if (cpStartLocation != null && currentLocation != null) {
-            val flyDistance = cpStartLocation!!.distanceTo(currentLocation!!)
+        if (LocationRepository.cpStartLocation != null && LocationRepository.currentLocation != null) {
+            val flyDistance = LocationRepository.cpStartLocation!!.distanceTo(LocationRepository.currentLocation!!)
             flyCpToCurrent.text = String.format("%.0f m", flyDistance)
         } else {
             flyCpToCurrent.text = "N/A"
@@ -1206,39 +1031,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
     }
 
     fun onClickCheckPointButton(view: View) {
-        if (isTracking && currentLocation != null && map != null) {
-            val cpLatLng = LatLng(currentLocation!!.latitude, currentLocation!!.longitude)
-            addCP(map!!, cpLatLng)
-
-            checkpoints.add(cpLatLng)
-
-            cpStartLocation = currentLocation
-
-            regularDistanceFromCP = 0.0
-
-            cpSessionStartTime = System.currentTimeMillis()
-            cpAverageSpeed.text = "N/A"
-
-            val checkpointLocation = GpsLocationDTO(
-                recordedAt = getCurrentISO8601Timestamp(),
-                latitude = currentLocation!!.latitude,
-                longitude = currentLocation!!.longitude,
-                accuracy = currentLocation!!.accuracy.toDouble(),
-                altitude = currentLocation!!.altitude,
-                verticalAccuracy = currentLocation!!.verticalAccuracyMeters.toDouble(),
-                gpsLocationTypeId = "00000000-0000-0000-0000-000000000003" // Checkpoint ID
-            )
-
-            synchronized(locationBuffer) {
-                locationBuffer.add(checkpointLocation)
-            }
-
-
-        } else {
-            Log.d(TAG, "Cannot add a checkpoint." +
-                    " Tracking: $isTracking," +
-                    " Current Location: $currentLocation")
-        }
+        addCheckpoint()
     }
 
     fun onClickOptionsButton(view: View) {
@@ -1297,7 +1090,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
             showTracksButton.visibility = View.VISIBLE
         }
 
-        // Logout button functionality
         logoutButton.setOnClickListener {
             showConfirmationDialog(
                 context = this,
@@ -1328,32 +1120,147 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, LocationListener, 
 
 
     fun onClickNorthUpButton(view: View) {
-        isTrackingUserRotation = false
+        viewModel.isTrackingUserRotation = false
 
-        if (map != null) {
-            val currentLocation = map!!.cameraPosition.target
-            map!!.animateCamera(
-                CameraUpdateFactory.newCameraPosition(
-                    CameraPosition.builder()
-                        .target(currentLocation)
-                        .zoom(17f)
-                        .bearing(0f)
-                        .tilt(0f)
-                        .build()
+        LocationRepository.currentLocation?.let { location ->
+            if (map != null) {
+                val latLng = LatLng(location.latitude, location.longitude)
+                map!!.animateCamera(
+                    CameraUpdateFactory.newCameraPosition(
+                        CameraPosition.builder()
+                            .target(latLng)
+                            .zoom(17f)
+                            .bearing(0f)
+                            .tilt(0f)
+                            .build()
+                    )
                 )
-            )
+                // Log.d(TAG, "North Up activated. Camera moved to: ${latLng.latitude}, ${latLng.longitude} with bearing: 0°")
+            }
+        } ?: run {
+            // Log.e(TAG, "Current location is null. Cannot move camera to North Up.")
         }
     }
 
 
     fun onClickResetButton(view: View) {
-        isTrackingUserRotation = true
+        viewModel.isTrackingUserRotation = true
+
+        LocationRepository.currentLocation?.let { location ->
+            if (map != null) {
+                val latLng = LatLng(location.latitude, location.longitude)
+                map!!.animateCamera(
+                    CameraUpdateFactory.newCameraPosition(
+                        CameraPosition.builder()
+                            .target(latLng)
+                            .zoom(17f)
+                            .bearing(location.bearing)
+                            .tilt(0f)
+                            .build()
+                    )
+                )
+                // Log.d(TAG, "Tracking rotation reset. Camera moved to: ${latLng.latitude}, ${latLng.longitude} with bearing: ${location.bearing}°")
+            }
+        } ?: run {
+            // Log.e(TAG, "Current location is null. Cannot reset camera to tracking user rotation.")
+        }
     }
 
 
     fun onClickCompassButton(view: View) {
-        isCompassVisible = !isCompassVisible
-        compassImageView.visibility = if (isCompassVisible) View.VISIBLE else View.GONE
+        viewModel.isCompassVisible = !viewModel.isCompassVisible
+        compassImageView.visibility = if (viewModel.isCompassVisible) View.VISIBLE else View.GONE
+    }
+
+
+    private fun handleNewLocationFromService(location: Location, speed: Float) {
+        // Log.d(TAG, "handleNewLocationFromService: Received location - Latitude: ${location.latitude}, Longitude: ${location.longitude}, Speed: $speed km/h")
+
+        updateUIWithRepositoryData()
+
+        rebuildPolylineFromRepository()
+
+        locationService?.updateNotificationWithNewData()
+
+        if (map != null) {
+            val latLng = LatLng(location.latitude, location.longitude)
+            val cameraUpdate = if (viewModel.isTrackingUserRotation) {
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.builder()
+                        .target(latLng)
+                        .zoom(17f)
+                        .bearing(location.bearing)
+                        .tilt(0f)
+                        .build()
+                )
+            } else {
+
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.builder()
+                        .target(latLng)
+                        .zoom(17f)
+                        .bearing(0f)
+                        .tilt(0f)
+                        .build()
+                )
+            }
+
+            map!!.animateCamera(cameraUpdate)
+            // Log.d(TAG, "Camera moved to: ${latLng.latitude}, ${latLng.longitude} with bearing: ${if (viewModel.isTrackingUserRotation) location.bearing else 0f}")
+        } else {
+            // Log.d(TAG, "Map is null. Cannot move camera.")
+        }
+    }
+
+    private fun updateUIWithRepositoryData() {
+
+        val distanceSum = LocationRepository.distanceSum
+        distanceCovered.text = String.format("%.0f m", distanceSum)
+
+
+        val cpDist = LocationRepository.regularDistanceFromCP
+        distanceCpToCurrent.text = if (cpDist > 0) {
+            String.format("%.0f m", cpDist)
+        } else {
+            "0 m"
+        }
+
+        val wpDist = LocationRepository.regularDistanceFromWP
+        wpToCurrent.text = if (wpDist > 0) {
+            String.format("%.0f m", wpDist)
+        } else {
+            "0 m"
+        }
+
+        updateFlyDistanceFromCP()
+        updateFlyDistanceFromWP()
+
+        updateCpAverageSpeed()
+        updateWpAverageSpeed()
+
+        updateSessionDurationAndAverageSpeed()
+    }
+
+    private fun updateSessionDurationAndAverageSpeed() {
+        val elapsedMillis = System.currentTimeMillis() - LocationRepository.sessionStartTime
+        val elapsedSeconds = elapsedMillis / 1000.0
+
+        val distanceInKm = LocationRepository.distanceSum / 1000.0
+        if (distanceInKm > 0) {
+            val elapsedMinutes = elapsedSeconds / 60.0
+            val minutesPerKm = elapsedMinutes / distanceInKm
+            val formattedSpeed = String.format("%.1f min/km", minutesPerKm)
+            averageSpeed.text = formattedSpeed
+        } else {
+            averageSpeed.text = "N/A"
+        }
+
+        val totalSeconds = elapsedSeconds.toLong()
+        val hours = totalSeconds / 3600
+        val minutes = (totalSeconds % 3600) / 60
+        val seconds = totalSeconds % 60
+        val formattedDuration = String.format("%02d:%02d:%02d", hours, minutes, seconds)
+        sessionDuration.text = formattedDuration
     }
 
 }
