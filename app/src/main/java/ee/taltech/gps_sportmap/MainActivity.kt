@@ -799,6 +799,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                     stopButton.visibility = View.GONE
                     startButton.visibility = View.VISIBLE
 
+                    saveTrack()
                     clearTrackingData()
 
                     locationService?.let { service ->
@@ -850,7 +851,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
 
     private fun clearTrackingData() {
-        saveTrack()
         handler.removeCallbacks(updateRunnable)
 
         CoroutineScope(Dispatchers.Main).launch {
