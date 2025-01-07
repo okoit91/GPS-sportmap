@@ -36,6 +36,7 @@ import androidx.recyclerview.widget.RecyclerView
 import ee.taltech.gps_sportmap.dal.DbHelper
 import ee.taltech.gps_sportmap.domain.Track
 import android.os.Handler
+import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModelProvider
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.google.android.gms.maps.CameraUpdateFactory
@@ -521,19 +522,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
     }
 
 
-
-    private fun calculateAverageSpeed(
-        startLocation: Location?,
-        startTime: Long,
-        distanceSum: Double
-    ): Double {
-        if (startLocation == null || startTime == 0L || distanceSum == 0.0) return 0.0
-        val elapsedTimeMillis = System.currentTimeMillis() - startTime
-        val elapsedMinutes = elapsedTimeMillis / 60000.0
-        val distanceInKm = distanceSum / 1000.0
-        return if (distanceInKm > 0) elapsedMinutes / distanceInKm else 0.0
-    }
-
     override fun onSensorChanged(event: SensorEvent?) {
 
         if (event == null) return
@@ -653,6 +641,15 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                     .position(checkpoint)
                     .title("Checkpoint")
                     .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_BLUE))
+            )
+        }
+
+        for (waypoint in LocationRepository.waypoints) {
+            map?.addMarker(
+                MarkerOptions()
+                    .position(waypoint)
+                    .title("Waypoint")
+                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
             )
         }
 
@@ -833,7 +830,6 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
                             } catch (e: Exception) {
                                 // Log.e(TAG, "Failed to upload remaining locations: ${e.message}")
                             } finally {
-                                // Ensure data is cleared after upload attempt
                                 withContext(Dispatchers.Main) {
                                     clearTrackingData()
                                 }
@@ -860,6 +856,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
 
         LocationRepository.trackedPoints.clear()
         LocationRepository.checkpoints.clear()
+        LocationRepository.waypoints.clear()
 
         resetOverallData()
         resetCPValues()
@@ -890,6 +887,7 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
         val jsonObject = org.json.JSONObject()
         val trackPointsArray = org.json.JSONArray()
         val checkpointsArray = org.json.JSONArray()
+        val waypointsArray = org.json.JSONArray()
         val speedsArray = org.json.JSONArray()
 
         for (point in LocationRepository.trackedPoints) {
@@ -906,12 +904,20 @@ class MainActivity : AppCompatActivity(), OnMapReadyCallback, SensorEventListene
             checkpointsArray.put(checkpointObject)
         }
 
+        for (waypoint in LocationRepository.waypoints) {
+            val waypointObject = org.json.JSONObject()
+            waypointObject.put("latitude", waypoint.latitude)
+            waypointObject.put("longitude", waypoint.longitude)
+            waypointsArray.put(waypointObject)
+        }
+
         for (speed in LocationRepository.speeds) {
             speedsArray.put(speed)
         }
 
         jsonObject.put("trackPoints", trackPointsArray)
         jsonObject.put("checkpoints", checkpointsArray)
+        jsonObject.put("waypoints", waypointsArray)
         jsonObject.put("speeds", speedsArray)
 
         return jsonObject.toString()

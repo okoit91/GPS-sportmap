@@ -30,25 +30,21 @@ class TrackAdapter(
 
     override fun onBindViewHolder(holder: TrackViewHolder, position: Int) {
         val track = tracks[position]
-        holder.trackName.text = "${track.name} #${track.id}" // You can customize this
+        holder.trackName.text = "${track.name} #${track.id}"
         holder.trackDate.text = android.text.format.DateFormat.format("yyyy-MM-dd HH:mm", track.dt)
 
         // select
         holder.itemView.setOnClickListener { onTrackSelected(track) }
 
         // rename
-        holder.renameButton.setOnClickListener {
-            onTrackRenamed(track)
-        }
+        holder.renameButton.setOnClickListener { onTrackRenamed(track) }
 
         // delete
         holder.deleteButton.setOnClickListener { onTrackDeleted(track) }
-
     }
 
     override fun getItemCount(): Int = tracks.size
 
-    // Update the adapter's data
     fun updateTracks(newTracks: List<Track>) {
         Log.d("TrackAdapter", "Updating tracks: ${newTracks.size}")
         tracks = newTracks

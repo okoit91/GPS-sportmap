@@ -368,6 +368,9 @@ class LocationForegroundService : Service(), LocationListener {
     override fun onLocationChanged(location: Location) {
         // Log.d(TAG, "onLocationChanged: New location received: $location")
 
+        val maxAllowedDistance = 50.0
+        val maxAllowedSpeed = 35.0
+
         var distance = 0f
         var speed: Float = 0f
 
@@ -375,6 +378,12 @@ class LocationForegroundService : Service(), LocationListener {
             distance = previousLocation!!.distanceTo(location)
             val timeDiff = (location.time - previousLocation!!.time) / 1000.0f
             speed = if (timeDiff > 0) (distance / timeDiff) * 3.6f else 0f
+
+            if (distance > maxAllowedDistance && speed > maxAllowedSpeed) {
+                // Log the invalid GPS entry and discard it
+                // Log.w(TAG, "Invalid GPS entry: Distance = $distance, Speed = $speed. Discarding location.")
+                return
+            }
         }
 
         previousLocation = location
